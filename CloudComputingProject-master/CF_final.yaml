@@ -1,0 +1,704 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Parameters:
+  EnvironmentName:
+    Description: An environment name that is prefixed to resource names
+    Type: String
+    Default: testEnviroment
+
+  VpcCIDR:
+    Description: Please enter the IP range (CIDR notation) for this VPC
+    Type: String
+    Default: 10.192.0.0/16
+
+  PublicSubnet1CIDR:
+    Description: Please enter the IP range (CIDR notation) for the public subnet in the first Availability Zone
+    Type: String
+    Default: 10.192.10.0/24
+
+  PublicSubnet2CIDR:
+    Description: Please enter the IP range (CIDR notation) for the public subnet in the second Availability Zone
+    Type: String
+    Default: 10.192.11.0/24
+
+  PrivateSubnet1CIDR:
+    Description: Please enter the IP range (CIDR notation) for the private subnet in the first Availability Zone
+    Type: String
+    Default: 10.192.20.0/24
+
+  PrivateSubnet2CIDR:
+    Description: Please enter the IP range (CIDR notation) for the private subnet in the second Availability Zone
+    Type: String
+    Default: 10.192.21.0/24
+
+  InstanceCount:
+    Description: Desired number of EC2 instances to launch
+    Type: Number
+    Default: 2
+
+  InstanceCountMin:
+    Description: Minimum number of EC2 instances to launch
+    Type: Number
+    Default: 2
+
+  InstanceCountMax:
+    Description: Maximum number of EC2 instances to launch
+    Type: Number
+    Default: 4
+
+  CognitoDomain:
+    Type: String
+    MinLength: 3
+    MaxLength: 63
+    AllowedPattern: ^[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?$
+    Description: Enter a string. Must be alpha numeric 3-63 in length.
+
+  MasterUsername:
+    Description: Database administration name.
+    Type: String
+    Default: postgres
+  MasterPassword:
+    NoEcho: "true"
+    Description: Database password.
+    Type: String
+    MinLength: "8"
+    AllowedPattern: "[a-zA-Z0-9!?]*"
+    ConstraintDescription: Must only contain upper and lowercase letters and numbers
+  DatabaseName:
+    Description: Database name.
+    Type: String
+    Default: postgres
+  DatabaseTableName:
+    Description: Default database table name.
+    Type: String
+    Default: postgres
+  DatabasePort:
+    Description: Database port.
+    Type: Number
+    Default: 5432
+
+  LatestAmiId:
+    Description: Region specific image from the Parameter Store
+    Type: String
+    Default: ami-0022f774911c1d690
+
+  InstanceIamRole:
+    Description: Name of the iam role given to the web server instances.
+    Type: String
+    Default: LabRole
+
+  emailNot:
+    Description: Email to send notification about errors
+    Type: String
+
+
+
+Mappings:
+  AWSInstanceType2Arch:
+    t2.micro:
+      Arch: HVM64
+  AWSRegionArch2AMI:
+    us-east-1:
+      HVM64: ami-0080e4c5bc078760e
+      HVMG2: ami-0aeb704d503081ea6
+    us-west-2:
+      HVM64: ami-01e24be29428c15b2
+      HVMG2: ami-0fe84a5b4563d8f27
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Ref EnvironmentName
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Ref EnvironmentName
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: !Ref PublicSubnet1CIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Public Subnet (AZ1)
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: !Ref PublicSubnet2CIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Public Subnet (AZ2)
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: !Ref PrivateSubnet1CIDR
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Private Subnet (AZ1)
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: !Ref PrivateSubnet2CIDR
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Private Subnet (AZ2)
+
+  NatGateway1EIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway2EIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGateway1EIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+
+  NatGateway2:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGateway2EIP.AllocationId
+      SubnetId: !Ref PublicSubnet2
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Public Routes
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet1
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet2
+
+  PrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Private Routes (AZ1)
+
+  DefaultPrivateRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway1
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      SubnetId: !Ref PrivateSubnet1
+
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Private Routes (AZ2)
+
+  DefaultPrivateRoute2:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway2
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      SubnetId: !Ref PrivateSubnet2
+
+  #Up to this point VPC and subnets creation
+
+  #Bastion config
+  BastionInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-0022f774911c1d690
+      #        'Fn::FindInMap':
+      #         - AWSRegionArch2AMI
+      #          - Ref: 'AWS::Region'
+      #          - 'Fn::FindInMap':
+      #              - AWSInstanceType2Arch
+      #              - t2.micro
+      #              - Arch
+      InstanceType: t2.micro
+      KeyName: vockey
+      SubnetId: !Ref PublicSubnet1
+      SecurityGroupIds:
+        - !Ref BastionSecurityGroup
+      Tags:
+        - Key: Name
+          Value: BastionInstance
+
+  BastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Security group for Bastion host"
+      VpcId: !Ref VPC
+
+  BastionAllowInboundSSHFromInternet:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref BastionSecurityGroup
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      CidrIp: 0.0.0.0/0
+
+  BastionAllowOutboundSSHToApplication:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref BastionSecurityGroup
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      DestinationSecurityGroupId: !Ref ApplicationSecurityGroup
+
+  ApplicationAllowInboundSSHFromBastion:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref ApplicationSecurityGroup #database security group
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      SourceSecurityGroupId: !Ref BastionSecurityGroup
+
+  # ApplicationKey:
+  #   Type: AWS::EC2::KeyPair
+  #   Properties:
+  #     KeyName: application
+
+  #End Bastion
+
+  #Cognito
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub ${CognitoDomain}-user-pool
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      VerificationMessageTemplate:
+        DefaultEmailOption: CONFIRM_WITH_LINK
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub ${CognitoDomain}-user-pool
+      GenerateSecret: false
+      UserPoolId: !Ref UserPool
+      ExplicitAuthFlows: 
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      SupportedIdentityProviders:
+        - COGNITO
+
+  UserPoolTestDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      UserPoolId: !Ref UserPool
+      Domain: !Ref CognitoDomain
+
+  #End Cognito
+
+  #Load Balancer
+
+  LoadBalancer:
+    DependsOn: LoadBalancerSecurityGroup
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: FinalProjectLoadBalancer
+      Scheme: internet-facing
+      Type: application
+      Subnets:
+        - Ref: PublicSubnet1
+        - Ref: PublicSubnet2
+      SecurityGroups:
+        - Ref: LoadBalancerSecurityGroup
+      IpAddressType: ipv4
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroup
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 25
+      HealthyThresholdCount: 3
+      Port: 3838
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      VpcId:
+        Ref: VPC
+
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable HTTP access on port 443
+      VpcId: !Ref VPC
+
+  HttpToLoadBalancer:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref LoadBalancerSecurityGroup
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      CidrIp: 0.0.0.0/0
+
+  HttpsToLoadBalancer:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref LoadBalancerSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: 0.0.0.0/0
+
+  #End Load Balancer
+
+  #Auto Scaling Group
+
+  ApplicationSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "Internal Security group for ${AWS::StackName}"
+      VpcId: !Ref VPC
+
+  AllowaccessfromLoadBalancerToApplication:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref ApplicationSecurityGroup
+      IpProtocol: tcp
+      FromPort: 3838
+      ToPort: 3838
+      SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+
+  BastionAllowToSecurity:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref ApplicationSecurityGroup
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      SourceSecurityGroupId: !Ref BastionSecurityGroup
+
+  WebServerAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: projectASG
+      VPCZoneIdentifier:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      HealthCheckGracePeriod: 3600
+      HealthCheckType: ELB
+      LaunchConfigurationName: !Ref WebServerLaunchTemplate
+      MinSize: !Ref InstanceCountMin
+      MaxSize: !Ref InstanceCountMax
+      DesiredCapacity: !Ref InstanceCount
+      Tags:
+        - Key: Name
+          Value: AS-WebServer
+          PropagateAtLaunch: true
+      TargetGroupARNs:
+        - !Ref ALBTargetGroup
+
+  IamInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: MyIamInstanceProfile
+      Path: "/"
+      Roles:
+        - !Ref InstanceIamRole
+
+  WebServerLaunchTemplate:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      LaunchConfigurationName: projectLT
+      ImageId: !Ref LatestAmiId
+      #        'Fn::FindInMap':
+      #          - AWSRegionArch2AMI
+      #          - Ref: 'AWS::Region'
+      #          - 'Fn::FindInMap':
+      #             - AWSInstanceType2Arch
+      #             - t2.micro
+      #             - Arch
+      IamInstanceProfile: !Ref IamInstanceProfile
+      InstanceType: t2.micro
+      KeyName: vockey
+      SecurityGroups:
+        - !Ref ApplicationSecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: "20"
+            VolumeType: gp2
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          exec > >(sudo tee /var/log/user-data.log|sudo logger -t user-data -s 2>sudo /dev/console) 2>&1
+          sudo yum -y update
+          sudo amazon-linux-extras install -y epel
+          sudo yum install -y R
+          sudo su - -c "R -e \"install.packages('shiny', repos='https://cran.rstudio.com/')\""
+          sudo yum install -y gdebi-core
+          sudo yum install -y libcurl-devel
+          sudo yum install -y libxml2-devel
+          sudo yum install -y openssl-devel
+          sudo yum install -y postgresql-devel
+          sudo su - -c "R -e \"install.packages(c('tidyverse', 'jsonlite', 'shinythemes', 'dplyr', 'png', 'ggplot2', 'ggjoy', 'DBI', 'RPostgres', 'paws.management', 'shinyjs'), repos='https://cran.rstudio.com/')\""
+          wget https://raw.githubusercontent.com/JacekCzupyt/CloudComputingProject/master/app.R
+          wget https://raw.githubusercontent.com/JacekCzupyt/CloudComputingProject/master/R/utils.R
+          wget https://github.com/JacekCzupyt/CloudComputingProject/raw/master/clickme.png
+          wget https://download3.rstudio.org/centos7/x86_64/shiny-server-1.5.18.987-x86_64.rpm
+          sudo yum install -y --nogpgcheck shiny-server-1.5.18.987-x86_64.rpm
+          sudo rm -r /srv/shiny-server/*
+          sudo mv clickme.png /srv/shiny-server
+          sudo mv app.R /srv/shiny-server
+          sudo mkdir /srv/shiny-server/R
+          sudo mv utils.R /srv/shiny-server/R
+
+  #end Auto scaling group
+
+  #Database
+
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: DBSubnetGroup for RDS  instance
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+
+  DatabaseInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: FinalProjDB
+      DBName: !Ref DatabaseName
+      Engine: postgres
+      MasterUsername: !Ref MasterUsername
+      MasterUserPassword: !Ref MasterPassword
+      Port: !Ref DatabasePort
+      DBInstanceClass: db.t3.micro
+      BackupRetentionPeriod: 7
+      CopyTagsToSnapshot: true
+      StorageType: gp2
+      AllocatedStorage: 20
+      PubliclyAccessible: false
+      MultiAZ: true
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroup
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "Internal Security group for ${AWS::StackName}"
+      VpcId: !Ref VPC
+
+  AllowaccessfromLoadBalancer:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref DBSecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref DatabasePort
+      ToPort: !Ref DatabasePort
+      SourceSecurityGroupId: !Ref ApplicationSecurityGroup
+
+  BastionAccessToDB:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref DBSecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref DatabasePort
+      ToPort: !Ref DatabasePort
+      SourceSecurityGroupId: !Ref BastionSecurityGroup
+
+  MasterUsernameParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /rds/database_user
+      Tier: Standard
+      Type: String
+      Value: !Ref MasterUsername
+
+  MasterPasswordParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /rds/database_password
+      Tier: Standard
+      Type: String
+      Value: !Ref MasterPassword
+
+  DatabaseNameParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /rds/database_name
+      Tier: Standard
+      Type: String
+      Value: !Ref DatabaseName
+
+  DatabaseTableNameParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /rds/table_name
+      Tier: Standard
+      Type: String
+      Value: !Ref DatabaseTableName
+
+  DatabasePortParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /rds/database_port
+      Tier: Standard
+      Type: String
+      Value: !Ref DatabasePort
+
+  DatabaseEndpointParam:
+    Type: AWS::SSM::Parameter
+    DependsOn: DatabaseInstance
+    Properties:
+      Name: /rds/database_endpoint
+      Tier: Standard
+      Type: String
+      Value: !GetAtt DatabaseInstance.Endpoint.Address
+
+  UserPoolClientIdParam:
+    Type: AWS::SSM::Parameter
+    DependsOn: UserPoolClient
+    Properties:
+      Name: /cognito/client_id
+      Tier: Standard
+      Type: String
+      Value: !Ref UserPoolClient
+
+  RDSnotification:
+    Type: AWS::RDS::EventSubscription
+    Properties:
+      EventCategories:
+        - failure
+        - deletion
+      SnsTopicArn: !Ref SnsForRdsEventSubscription
+      SourceIds:
+        - !Ref DatabaseInstance
+      SourceType: db-instance
+      Enabled: false
+
+  SnsForRdsEventSubscription:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Endpoint: !Ref emailNot
+          Protocol: email
+      TopicName: rds-subscription-topic
+
+  SnsForAppEventSubscription:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Endpoint: !Ref emailNot
+          Protocol: email
+      TopicName: application-subscription-topic
+
+  AppHealthCheck:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Port: 80
+        Type: HTTP
+        FullyQualifiedDomainName: !GetAtt LoadBalancer.DNSName
+        RequestInterval: 30
+        FailureThreshold: 10
+
+  AppAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: App alarm
+      AlarmDescription: Invocation alarm for my AWS Route53
+      AlarmActions:
+        - !Ref SnsForAppEventSubscription
+      Namespace: AWS/Route53
+      MetricName: HealthCheckStatus
+      Dimensions:
+        - Name: HealthCheckId
+          Value: !Ref AppHealthCheck
+      ComparisonOperator: LessThanThreshold
+      Statistic: Minimum
+      Threshold: 1
+      Period: 60
+      EvaluationPeriods: 60
+      DatapointsToAlarm: 60
+
+
+
+
+
